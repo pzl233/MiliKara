@@ -83,6 +83,45 @@ def bgr_tag(hex_rgb: str) -> str:
 _bgr_tag = bgr_tag
 
 
+def apply_opacity(ass_text: str, text_opacity: int = 100, info_opacity: int = 100) -> str:
+    """Multiply the existing alpha of every generated layer, including animated overrides.
+
+    Keep hidden glow fills hidden, and retain fades, sweep clips and the original
+    shadow/glow strength. Song cards and production credits have independent opacity.
+    """
+    if text_opacity == info_opacity == 100:
+        return ass_text
+
+    def scaled(alpha: int, opacity: int) -> str:
+        return f"{255 - round((255 - alpha) * opacity / 100):02X}"
+
+    alpha_tag = re.compile(r"(\\(?:[1-4]a|alpha)&H)([0-9a-f]{1,2})(&)", re.I)
+
+    def overrides(text: str, opacity: int) -> str:
+        return re.sub(r"\{[^}]*\}", lambda block: alpha_tag.sub(
+            lambda m: m[1] + scaled(int(m[2], 16), opacity) + m[3], block[0]), text)
+
+    lines = []
+    for line in ass_text.splitlines():
+        if line.startswith("Style: "):
+            fields = line[7:].split(",")
+            opacity = info_opacity if fields[0] == "KInfo" else text_opacity
+            if opacity != 100:
+                for i in range(3, 7):
+                    color = re.fullmatch(r"(&H)([0-9a-f]{2})([0-9a-f]{6})(&?)", fields[i], re.I)
+                    if color:
+                        fields[i] = color[1] + scaled(int(color[2], 16), opacity) + color[3] + color[4]
+                line = "Style: " + ",".join(fields)
+        elif line.startswith("Dialogue: "):
+            fields = line.split(",", 9)
+            opacity = info_opacity if fields[3] == "KInfo" else text_opacity
+            if opacity != 100:
+                fields[9] = overrides(fields[9], opacity)
+                line = ",".join(fields)
+        lines.append(line)
+    return "\n".join(lines) + ("\n" if ass_text.endswith("\n") else "")
+
+
 def ass_time(ms: float) -> str:
     cs = max(0, int(round(ms / 10)))
     h, rem = divmod(cs, 360000)
@@ -1379,7 +1418,9 @@ def build_ass(project: Project, result: AlignmentResult, style: Optional[Karaoke
     orig = project.asset("original")
     song_end = (orig.duration_ms + audio_offset_ms) if orig is not None and orig.duration_ms else None
     events += info_events(project, style, W, H, k, family, audio_offset_ms, boxes=boxes, warnings=warnings,
-                          end_ms=song_end)
+                          end_ms=song_end, result=result,
+                          font_families=[family, *([ruby_family] if rb.enabled else []),
+                                         *([trans_family] if tr.enabled else [])])
 
     shadow_back = ass_color(txt.shadow_color, 100 - txt.shadow_opacity)
 
@@ -1431,7 +1472,7 @@ def build_ass(project: Project, result: AlignmentResult, style: Optional[Karaoke
         "[Events]",
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
     ]
-    return "\n".join(header + events) + "\n", warnings
+    return apply_opacity("\n".join(header + events) + "\n", txt.opacity, style.info.opacity), warnings
 
 
 def _syllables(parts: list[Part], cx: float, bottom_y: float, size: float, scale: float, measurer, font: str,

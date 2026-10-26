@@ -13,6 +13,7 @@ import { AiSettingsForm } from '@/components/AiSettingsForm';
 import { DiagnosticsButton } from '@/components/DiagnosticsButton';
 import { loadStorage, StorageDialog } from '@/components/StorageDialog';
 import { StylePanel } from '@/components/karaoke/StylePanel';
+import { ProductionCreditsEditor } from '@/components/karaoke/ProductionCreditsEditor';
 import { arrowNav, Button, Callout, Card, CardBody, CardHeader, Field, Segmented, Select, Spinner, Switch } from '@/components/ui';
 
 type Simple = AppSettings['simple'];
@@ -22,6 +23,7 @@ const TABS = [
   { id: 'ai', label: 'AI 注音', icon: <Bot className="size-4" /> },
   { id: 'separation', label: '人声分离', icon: <Scissors className="size-4" /> },
   { id: 'calibration', label: '开头对齐', icon: <Crosshair className="size-4" /> },
+  { id: 'credits', label: '片头署名', icon: <Film className="size-4" /> },
   { id: 'style', label: '字幕样式', icon: <Subtitles className="size-4" /> },
   { id: 'output', label: '输出视频', icon: <Film className="size-4" /> },
   { id: 'storage', label: '存储空间', icon: <HardDrive className="size-4" /> },
@@ -158,6 +160,9 @@ export function SimpleSettings() {
           {tab === 'style' && (
             <DefaultStyleCard style={s.karaoke} />
           )}
+          {tab === 'credits' && (
+            <ProductionCreditsCard style={s.karaoke} />
+          )}
           {tab === 'output' && (
             <Card>
               <CardHeader icon={<Film className="size-4" />} title="输出视频" description="任务完成后自动把字幕烧录进视频（没有视频时生成纯黑背景的视频）。" />
@@ -248,6 +253,21 @@ function UpdateCard({ enabled }: { enabled: boolean }) {
 
 /** The complete default subtitle style of new tasks, with the few knobs people change most. */
 /** The complete subtitle style of new tasks (the same panel as the detailed mode). */
+function ProductionCreditsCard({ style }: { style: KaraokeStyle }) {
+  const change = (patch: Partial<KaraokeStyle['info']>) => {
+    const current = useSimple.getState().settings?.simple.karaoke ?? style;
+    void run(() => saveSettings({ simple: { karaoke: { ...current, info: { ...current.info, ...patch } } } }), '保存片头署名失败');
+  };
+  return (
+    <Card>
+      <CardHeader icon={<Film className="size-4" />} title="片头署名" description="写上视频制作者，并展示这首歌使用的分离模型和字体。之后添加的任务会使用这里的设置。" />
+      <CardBody className="space-y-4">
+        <ProductionCreditsEditor info={style.info} onChange={change} />
+      </CardBody>
+    </Card>
+  );
+}
+
 function DefaultStyleCard({ style }: { style: KaraokeStyle }) {
   const projects = useApp((s) => s.projects);
   const [draft, setDraft] = useState(style);

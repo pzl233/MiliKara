@@ -748,6 +748,7 @@ class _KaraokeBase(_Base):
 
 class KaraokeText(_KaraokeBase):
     font: str = _font()  # font family; "" = best available Japanese font
+    opacity: int = Field(default=100, ge=0, le=100)  # all lyric layers, including ruby / translation / effects
     size: int = Field(default=88, ge=24, le=200)
     bold: bool = True
     color_unsung: str = _color("#FFFFFF")
@@ -893,17 +894,26 @@ class KaraokeSongInfo(_KaraokeBase):
     with its own (``Project.song_info_text``)."""
 
     enabled: bool = False
-    position: Literal["top-left", "top-right"] = "top-left"
+    opacity: int = Field(default=100, ge=0, le=100)  # independent opacity for song cards and production credits
+    position: Literal["top-left", "top-center", "top-right"] = "top-left"
     fields: list[SongInfoField] = Field(default_factory=lambda: ["title", "artist"])
-    start_ms: int = Field(default=500, ge=0, le=60000)  # audio time
-    duration_ms: int = Field(default=7000, ge=1000, le=60000)
+    start_ms: int = Field(default=500, ge=0, le=3600000)  # audio time; up to one hour
+    duration_ms: int = Field(default=7000, ge=1000, le=600000)
     # the same card again at the end of the song (on whenever the card is), until the song ends
     outro: bool = True
-    outro_duration_ms: int = Field(default=7000, ge=1000, le=60000)
+    outro_duration_ms: int = Field(default=7000, ge=1000, le=600000)
     size: int = Field(default=56, ge=20, le=160)  # title size at 1920 wide; other lines are smaller
     margin: int = Field(default=56, ge=0, le=400)  # from the top and side edges
     color: str = _color("", follow=True)  # "" = the lyrics' unsung colour
     accent: str = _color("", follow=True)  # accent bar; "" = the lyrics' sung colour
+    # Production credits belong only to the opening card, independently of the song card.
+    credits_enabled: bool = False
+    credits_layout: Literal["card", "single-line"] = "card"
+    creator: str = Field(default="", max_length=120)
+    model_text: str = Field(default="", max_length=400)  # empty = the project's actual separation models
+    font_text: str = Field(default="", max_length=400)  # empty = resolved subtitle font families
+    show_models: bool = True
+    show_fonts: bool = True
 
 
 class KaraokeSinger(_KaraokeBase):

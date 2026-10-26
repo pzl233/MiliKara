@@ -18,10 +18,14 @@ import { deleteStyle, loadSavedStyles, sameLook, saveStyle, useLibrary } from '@
 import { arrowNav, Badge, Button, Input, Segmented, Select, SliderField, Switch, Textarea, Tip } from '@/components/ui';
 import { ColorRow, TEMPLATE_LABEL } from './ThemeColors';
 import { COUNTDOWN_DEFAULTS } from '@/lib/countdown';
+import { ProductionCreditsEditor } from './ProductionCreditsEditor';
 
 export type SectionId = 'colors' | 'text' | 'ruby' | 'translation' | 'info' | 'layout' | 'timing' | 'effects';
 const SECTION_IDS: SectionId[] = ['colors', 'text', 'ruby', 'translation', 'info', 'layout', 'timing', 'effects'];
 type Patch = (fn: (s: KaraokeStyle) => void) => void;
+const INFO_POSITION_LABEL: Record<KaraokeStyle['info']['position'], string> = {
+  'top-left': '左上角', 'top-center': '顶部居中', 'top-right': '右上角',
+};
 
 export interface TranslationInfo {
   /** lines of the current lyrics that have a translation (undefined: no project, e.g. the simple-mode settings) */
@@ -43,6 +47,8 @@ export interface SongInfoEditing {
   data: SongInfo | null;
   /** save the card's own text; null goes back to the chosen fields */
   onText: (text: string | null) => void;
+  onPreviewCredits?: (info: KaraokeStyle['info']) => void;
+  previewCreditsDisabledReason?: (info: KaraokeStyle['info']) => string | null;
 }
 
 // ------------------------------------------------------------------ small building blocks
@@ -242,6 +248,9 @@ export function StylePanel({ style, onChange, fonts, defaultFont, defaultSection
         <Section {...sec('text')} icon={<Type className="size-4" />} title="歌词"
           summary={`${T.font || defaultFont || '默认字体'} · ${T.size}px${T.bold ? ' · 粗体' : ''} · 描边 ${T.outline}${G.enabled ? ' · 荧光边缘' : ''}`}>
           <Row label="字体"><FontSelect label="歌词字体" value={T.font} fonts={fonts} fallback={defaultFont} onChange={(v) => patch((s) => { s.text.font = v; })} /></Row>
+          <Row label="字幕透明度" hint="0% 完全不透明，100% 完全透明。歌词、注音、翻译及描边、阴影和荧光同步变化。">
+            <Num name="字幕透明度" unit="%" value={100 - (T.opacity ?? 100)} max={100} onChange={(v) => patch((s) => { s.text.opacity = 100 - v; })} />
+          </Row>
           <Row label="字号" hint="以 1920 宽的画面为准，生成视频时按视频宽度缩放"><Num name="字号" value={T.size} min={24} max={200} onChange={(v) => patch((s) => { s.text.size = v; })} /></Row>
           <Switch checked={T.bold} onChange={(v) => patch((s) => { s.text.bold = v; })} label="粗体" />
           <Row label="描边宽度"><Num name="描边宽度" value={T.outline} max={16} step={0.5} onChange={(v) => patch((s) => { s.text.outline = v; })} /></Row>
@@ -328,7 +337,7 @@ export function StylePanel({ style, onChange, fonts, defaultFont, defaultSection
         </Section>
 
         <Section {...sec('info')} icon={<Music className="size-4" />} title="歌曲信息"
-          summary={I.enabled ? `${I.position === 'top-left' ? '左上角' : '右上角'} · ${songInfo?.data?.text != null ? '自定义文字' : I.fields.map((f) => FIELD_LABEL[f]).join(' / ')} · ${I.duration_ms / 1000}s${(I.outro ?? true) ? ` · 结尾 ${(I.outro_duration_ms ?? 7000) / 1000}s` : ''}` : '关闭'}>
+          summary={I.enabled ? `${INFO_POSITION_LABEL[I.position]} · ${songInfo?.data?.text != null ? '自定义文字' : I.fields.map((f) => FIELD_LABEL[f]).join(' / ')} · ${I.duration_ms / 1000}s${(I.outro ?? true) ? ` · 结尾 ${(I.outro_duration_ms ?? 7000) / 1000}s` : ''}${I.credits_enabled ? ' · 片头署名' : ''}` : I.credits_enabled ? `片头署名 · ${INFO_POSITION_LABEL[I.position]} · ${I.duration_ms / 1000}s` : '关闭'}>
           <InfoEditor style={style} patch={patch} songInfo={songInfo} />
         </Section>
 
@@ -621,11 +630,16 @@ function InfoEditor({ style, patch, songInfo }: { style: KaraokeStyle; patch: Pa
   });
   return (
     <>
+      <div className="space-y-3 rounded-xl border border-line p-3">
+        <div className="text-[13px] font-medium">片头署名</div>
+        <ProductionCreditsEditor info={I} onChange={(changes) => patch((s) => { Object.assign(s.info, changes); })}
+          onPreview={songInfo?.onPreviewCredits} previewDisabledReason={songInfo?.previewCreditsDisabledReason} />
+      </div>
       <Switch checked={I.enabled} onChange={(v) => patch((s) => { s.info.enabled = v; })} label="显示歌曲信息（开头，以及结尾）" />
       <div className={cn('space-y-4', !I.enabled && 'pointer-events-none opacity-45')}>
         <Row label="位置">
           <Segmented value={I.position} onChange={(v) => patch((s) => { s.info.position = v; })}
-            options={[{ value: 'top-left', label: '左上角' }, { value: 'top-right', label: '右上角' }]} />
+            options={[{ value: 'top-left', label: '左上角' }, { value: 'top-center', label: '顶部居中' }, { value: 'top-right', label: '右上角' }]} />
         </Row>
         <Row label="显示哪些行" hint={custom !== null ? '正在使用下面的自定义文字，勾选暂不生效'
           : data ? '没有数据的行不会显示' : '每首歌有数据的行才会显示（来自音乐平台和歌词里的“作词：…”等行）'}>
@@ -645,16 +659,19 @@ function InfoEditor({ style, patch, songInfo }: { style: KaraokeStyle; patch: Pa
         </Row>
         {songInfo && data && <InfoText auto={autoInfoText(I.fields, data.fields)} custom={custom} onText={songInfo.onText} />}
         <Row label="标题字号" hint="其余各行约为标题的一半多一点"><Num name="标题字号" value={I.size} min={20} max={120} onChange={(v) => patch((s) => { s.info.size = v; })} /></Row>
+        <Row label="信息透明度" hint="0% 完全不透明，100% 完全透明；片头署名也使用这个透明度。">
+          <Num name="信息透明度" unit="%" value={100 - (I.opacity ?? 100)} max={100} onChange={(v) => patch((s) => { s.info.opacity = 100 - v; })} />
+        </Row>
         <Row label="与画面边缘的距离"><Num name="信息边距" value={I.margin} max={200} onChange={(v) => patch((s) => { s.info.margin = v; })} /></Row>
-        <Row label="出现时间" hint="从音频开头算起"><Num name="信息出现时间" unit="ms" value={I.start_ms} max={10000} step={100} onChange={(v) => patch((s) => { s.info.start_ms = v; })} /></Row>
-        <Row label="显示多久" hint="顶部要出现歌词或翻译时会提前淡出（至少显示 2 秒）">
-          <Num name="信息显示时长" unit="ms" value={I.duration_ms} min={1000} max={20000} step={500} onChange={(v) => patch((s) => { s.info.duration_ms = v; })} />
+        <Row label="出现时间" hint="从音频开头算起，最多 60 分钟；可直接输入秒数"><Num name="信息出现时间" unit="秒" value={I.start_ms / 1000} max={3600} step={0.1} onChange={(v) => patch((s) => { s.info.start_ms = Math.round(v * 1000); })} /></Row>
+        <Row label="显示多久" hint="最多 10 分钟，可直接输入秒数；顶部要出现歌词或翻译时会提前淡出（至少显示 2 秒）">
+          <Num name="信息显示时长" unit="秒" value={I.duration_ms / 1000} min={1} max={600} step={0.5} onChange={(v) => patch((s) => { s.info.duration_ms = Math.round(v * 1000); })} />
         </Row>
         <Switch checked={I.outro ?? true} onChange={(v) => patch((s) => { s.info.outro = v; })} label="结尾也显示（同样的内容和样式，一直显示到歌曲结束）" />
         {(I.outro ?? true) && (
-          <Row label="结尾显示多久" hint="从歌曲结束往前算；顶部最后一句歌词或翻译消失后才出现（至少显示 2 秒）">
-            <Num name="结尾信息显示时长" unit="ms" value={I.outro_duration_ms ?? 7000} min={1000} max={20000} step={500}
-              onChange={(v) => patch((s) => { s.info.outro_duration_ms = v; })} />
+          <Row label="结尾显示多久" hint="从歌曲结束往前算，最多 10 分钟；可直接输入秒数，顶部最后一句歌词或翻译消失后才出现（至少显示 2 秒）">
+            <Num name="结尾信息显示时长" unit="秒" value={(I.outro_duration_ms ?? 7000) / 1000} min={1} max={600} step={0.5}
+              onChange={(v) => patch((s) => { s.info.outro_duration_ms = Math.round(v * 1000); })} />
           </Row>
         )}
       </div>

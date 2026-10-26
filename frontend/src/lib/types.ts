@@ -108,7 +108,7 @@ export interface AudioAsset {
   origin_offset_samples: number;
   sync_checked: boolean;
   sync_report: Record<string, any> | null;
-  source: { kind: string; filename: string | null; model: string | null; model_version: string | null; notes: string[]; config: Record<string, any> };
+  source: { kind: string; filename: string | null; model: string | null; model_version: string | null; notes: string[]; config: Record<string, any>; parent_sha256?: string | null };
 }
 
 export interface DecodeConfig {
@@ -240,6 +240,8 @@ export interface KaraokeStyle {
   text: {
     font: string; size: number; bold: boolean; color_unsung: string; color_sung: string; outline_color: string;
     outline: number; shadow: number; shadow_color: string; shadow_opacity: number;
+    /** Opacity 0–100, default 100; shared by lyrics, readings, translations and their decoration. */
+    opacity?: number;
   };
   ruby: {
     enabled: boolean; script: 'hiragana' | 'katakana' | 'romaji'; target: 'kanji' | 'all'; size_pct: number; gap: number;
@@ -263,10 +265,16 @@ export interface KaraokeStyle {
   theme?: { template: 'plain' | 'glow'; color: string; secondary: string } | null;
   /** song title card in a top corner at the start */
   info: {
-    enabled: boolean; position: 'top-left' | 'top-right'; fields: SongInfoField[];
+    enabled: boolean; position: 'top-left' | 'top-center' | 'top-right'; fields: SongInfoField[];
     start_ms: number; duration_ms: number; size: number; margin: number; color: string; accent: string;
     /** the same card again at the end of the song (on whenever the card is) */
     outro?: boolean; outro_duration_ms?: number;
+    /** Production credits appear only at the beginning, independently of the song card. */
+    credits_enabled?: boolean; creator?: string; model_text?: string; font_text?: string;
+    show_models?: boolean; show_fonts?: boolean;
+    credits_layout?: 'card' | 'single-line';
+    /** Opacity 0–100, default 100; independent of the lyric opacity. */
+    opacity?: number;
   };
   /** burn-in audio: vocals kept at this % over the full instrumental */
   output?: { vocal_keep_pct: number };

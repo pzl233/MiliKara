@@ -10,12 +10,26 @@
 
 <p align="center">
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-1BA8D8.svg"></a>
-  <a href="https://github.com/BilyHurington/MiliKara/releases"><img alt="Release" src="https://img.shields.io/github/v/release/BilyHurington/MiliKara?include_prereleases&color=1BA8D8&label=Release"></a>
+  <a href="https://github.com/BilyHurington/MiliKara/releases"><img alt="Upstream Release" src="https://img.shields.io/github/v/release/BilyHurington/MiliKara?include_prereleases&color=1BA8D8&label=Upstream%20Release"></a>
   <img alt="Platform: Windows" src="https://img.shields.io/badge/Platform-Windows-1BA8D8.svg">
   <img alt="Platform: macOS" src="https://img.shields.io/badge/Platform-macOS-1BA8D8.svg">
   <img alt="Python 3.11+" src="https://img.shields.io/badge/Python-3.11%2B-1BA8D8.svg">
   <img alt="Runs locally" src="https://img.shields.io/badge/Runs-locally-1BA8D8.svg">
 </p>
+
+## 此 fork 的定制功能
+
+这是 [BilyHurington/MiliKara](https://github.com/BilyHurington/MiliKara) 的定制 fork，基于 **v1.2.0**。默认展示的 `custom` 分支包含以下改动；`main` 保留上游分支，方便以后同步。
+
+- 支持 `bs_roformer_karaoke_frazer_becruily.ckpt` 分离模型，按固定来源下载并校验权重，兼容项目使用的 audio-separator 0.30.2。
+- 片头署名可填写制作者，自动显示当前项目实际使用的**分离模型**和字幕字体，也可手动填写。
+- 署名支持**多行信息卡 / 顶部单行**，可**靠左 / 居中 / 靠右**；出现时间最多 60 分钟，显示时长最多 10 分钟，可直接输入秒数。
+- **预览片头署名**按钮直接跳到署名显示的时刻，刚填写的内容也能立即预览。
+- 歌词、注音、翻译支持 **0–100% 透明度**，描边、阴影、荧光和特效一起变淡；署名与歌曲信息可单独调节透明度。
+
+使用位置、已有项目的设置方法、源码安装与验证说明见 **[定制版说明](docs/customizations.md)**；分离模型的来源与配置见 **[Frazer / becruily 模型说明](docs/frazer-becruily.md)**。
+
+**本 fork 当前提供源码和已构建的网页资源，尚未发布定制离线安装包。** 下方 Releases 与离线版更新说明属于上游官方版本；下载或运行上游更新器会使用上游程序，不包含本分支的定制功能。歌曲、用户项目和模型权重不在此仓库中。
 
 > 本软件受 [StrangeUtaGame](https://github.com/karaoke-studio/StrangeUtaGame) 启发。MiliKara 是自动对齐工具，不是卡拉OK手动打轴软件；如果需要手动打轴，请使用 StrangeUtaGame 原软件。
 
@@ -65,7 +79,7 @@
 **从源码安装**：需要 Python 3.11+、[uv](https://docs.astral.sh/uv/)，以及带 libass 的 `ffmpeg`（macOS：`brew install ffmpeg-full`）。目前主要在 macOS（Apple 芯片）上使用和测试；Linux / Windows 上可以用 CPU、NVIDIA 显卡或 AMD 显卡（见下）运行。
 
 ```bash
-git clone <仓库地址> MiliKara && cd MiliKara
+git clone https://github.com/pzl233/MiliKara.git MiliKara && cd MiliKara
 uv venv --python 3.12 .venv
 uv pip install -e ".[ml,separation]"    # 对齐模型（torch + transformers）和人声分离
 ```

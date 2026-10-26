@@ -23,6 +23,7 @@ import { setSimpleDefault } from '@/store/simple';
 import { countdownPlan } from '@/lib/countdown';
 import { useFitHeight } from '@/lib/useFitHeight';
 import { singersSettled } from '@/store/singers';
+import { productionCreditsPreview } from '@/lib/productionCredits';
 
 interface LineSpan { id: string; index: number; text: string; start: number; end: number; countdown: boolean | null }
 
@@ -36,9 +37,11 @@ export function KaraokePage() {
   const [songInfo, setSongInfo] = useState<SongInfo | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
+  const [creditsPreviewRequest, setCreditsPreviewRequest] = useState<{ tMs: number } | null>(null);
   const dirty = useRef(false);
   const pid = project.id;
   const styleCol = useFitHeight();
+  const previewArea = useRef<HTMLDivElement>(null);
 
   useEffect(() => { void resumeJobs(pid); }, [pid]);  // a video made while this page was closed keeps its download link
 
@@ -167,6 +170,15 @@ export function KaraokePage() {
     );
   }
 
+  const showCreditsPreview = (info: KaraokeStyle['info']) => {
+    const target = productionCreditsPreview(info, project.audio);
+    if (target.reason) { toast('warn', target.reason); return; }
+    if (JSON.stringify(info) !== JSON.stringify(style.info)) change({ ...style, info: { ...info } });
+    setCreditsPreviewRequest({ tMs: target.tMs });
+    previewArea.current?.scrollIntoView?.({ block: 'nearest', behavior: 'smooth' });
+  };
+  const creditsPreviewReason = (info: KaraokeStyle['info']) => productionCreditsPreview(info, project.audio).reason;
+
   return (
     <>
       <Header />
@@ -180,7 +192,11 @@ export function KaraokePage() {
       <SingersNote style={style} />
       <div className="grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(300px,340px)] xl:grid-cols-[minmax(0,1fr)_380px]">
         <div className="min-w-0 space-y-6">
-          <PreviewCard style={style} lines={lines} refreshKey={`${songInfo?.text ?? ''}|${lines.map((l) => l.countdown ?? '').join()}`} />
+          <div ref={previewArea}>
+            <PreviewCard style={style} lines={lines} refreshKey={`${songInfo?.text ?? ''}|${lines.map((l) => l.countdown ?? '').join()}`}
+              creditsPreviewRequest={creditsPreviewRequest} onPreviewCredits={() => showCreditsPreview(style.info)}
+              creditsPreviewReason={creditsPreviewReason(style.info)} />
+          </div>
           <BurnCard style={style} patch={patch} beforeBurn={flush} />
           <RecentExports jobKinds={['burn']} match={(n) => /-karaoke.*\.(mp4|mkv|mov)$/i.test(n)} first={3}
             title="导出过的视频" description="这个项目生成过的带字幕视频，最新的在前。" />
@@ -201,7 +217,8 @@ export function KaraokePage() {
                 storageKey="detail" fill
                 translation={{ lines: translated, onFetch: canFetch ? fetchTranslation : undefined }}
                 countdownLines={{ overrides: lines.filter((l) => l.countdown !== null).length, onReset: resetCountdowns }}
-                songInfo={{ data: songInfo, onText: (t) => void saveInfoText(t) }} />
+                songInfo={{ data: songInfo, onText: (t) => void saveInfoText(t), onPreviewCredits: showCreditsPreview,
+                  previewCreditsDisabledReason: creditsPreviewReason }} />
             </CardBody>
           </Card>
         </div>
@@ -240,7 +257,10 @@ function Header() {
 
 // ------------------------------------------------------------------ preview
 
-function PreviewCard({ style, lines, refreshKey }: { style: KaraokeStyle; lines: LineSpan[]; refreshKey: string }) {
+function PreviewCard({ style, lines, refreshKey, creditsPreviewRequest, onPreviewCredits, creditsPreviewReason }: {
+  style: KaraokeStyle; lines: LineSpan[]; refreshKey: string;
+  creditsPreviewRequest: { tMs: number } | null; onPreviewCredits: () => void; creditsPreviewReason: string | null;
+}) {
   const [lineIdx, setLineIdx] = useState(0);
   const [pct, setPct] = useState(40);
   const [custom, setCustom] = useState<number | null>(null);
@@ -249,6 +269,9 @@ function PreviewCard({ style, lines, refreshKey }: { style: KaraokeStyle; lines:
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [timeDraft, setTimeDraft] = useState<string | null>(null);
+  useEffect(() => {
+    if (creditsPreviewRequest) { setCustom(creditsPreviewRequest.tMs); setTimeDraft(null); }
+  }, [creditsPreviewRequest]);
 
   const line = lines[Math.min(lineIdx, Math.max(0, lines.length - 1))];
   const plan = useMemo(() => countdownPlan(lines, style.countdown), [lines, style.countdown]);
@@ -314,6 +337,13 @@ function PreviewCard({ style, lines, refreshKey }: { style: KaraokeStyle; lines:
           )}
           {error && <div className="absolute inset-x-3 bottom-3 rounded-lg bg-danger/90 px-3 py-2 text-xs text-white">{error}</div>}
           <div className="absolute bottom-3 left-3 rounded-md bg-black/60 px-2 py-0.5 font-mono text-xs text-white/85">{fmtMs(t)}</div>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2">
+          <Tip content={creditsPreviewReason ?? '跳到片头署名显示期间，查看当前设置'}>
+            <Button size="sm" variant="secondary" disabled={!!creditsPreviewReason} onClick={onPreviewCredits}>预览片头署名</Button>
+          </Tip>
+          {creditsPreviewReason && <span className="text-xs text-muted">{creditsPreviewReason}</span>}
         </div>
 
         {lines.length > 0 && (

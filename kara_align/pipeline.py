@@ -1188,6 +1188,12 @@ def resolve_task_style(simple: "app_settings.SimpleSettings",
     else:
         style = base.model_copy(deep=True)
         label, colors = "默认样式", [style.text.color_sung]
+    # Production defaults apply to every new task, including one using an older saved style.
+    # A project can still override them later in the detailed subtitle editor.
+    credits_fields = ("credits_enabled", "credits_layout", "creator", "model_text", "font_text", "show_models", "show_fonts")
+    if base.info.credits_enabled:
+        credits_fields += ("position", "start_ms", "duration_ms", "size", "margin", "opacity")
+    style.info = style.info.model_copy(update={name: getattr(base.info, name) for name in credits_fields})
     if opts.translation is not None:
         style.translation.enabled = opts.translation
     if opts.song_info is not None:

@@ -420,7 +420,7 @@ describe('karaoke subtitles page', () => {
 
   let info: { fields: Record<string, string>; labels: Record<string, string>; text: string | null };
 
-  function karaokeServer() {
+  function karaokeServer(style = DEFAULT_STYLE) {
     info = {
       fields: { title: 'わたぐも', artist: '黒沢ともよ', album: 'STARLIGHT MASTER 13' },
       labels: { title: '歌名', artist: '歌手', album: '专辑', lyricist: '作词', composer: '作曲', arranger: '编曲' }, text: null,
@@ -450,7 +450,7 @@ describe('karaoke subtitles page', () => {
         }
         return json(info);
       }
-      if (u.endsWith('/karaoke') && (!init || init.method === 'GET' || !init.method)) return json(DEFAULT_STYLE);
+      if (u.endsWith('/karaoke') && (!init || init.method === 'GET' || !init.method)) return json(style);
       if (u.endsWith('/karaoke/preview')) {
         api.calls.push({ method: 'POST', url: u, body: JSON.parse(String(init!.body)) });
         return new Response(new Blob(['png']), { status: 200, headers: { 'Content-Type': 'image/png' } });
@@ -546,6 +546,46 @@ describe('karaoke subtitles page', () => {
     await userEvent.click(screen.getByRole('button', { name: /恢复为按勾选自动生成/ }));
     await waitFor(() => expect(api.find('PUT', '/karaoke/info').at(-1)?.body.text).toBeNull());
     expect(screen.getByRole('textbox', { name: '歌曲信息文字' })).toHaveValue('わたぐも\n黒沢ともよ\nSTARLIGHT MASTER 13');
+  });
+
+  it('previews production credits on the audio timeline and uses the editor draft immediately', async () => {
+    const pv = fixturePV();
+    const orig = pv.project.audio.find((a) => a.role === 'original')!;
+    orig.duration_ms = 20000;
+    pv.project.video = {
+      id: 'v1', sha256: 'abc', path: 'assets/abc.mp4', filename: 'clip.mp4', container: '.mp4', duration_ms: 20000,
+      width: 1920, height: 1080, fps: 29.97, video_codec: 'h264', audio_codec: 'aac', audio_offset_s: 2.75, audio_sha256: orig.sha256,
+    };
+    seedStore('karaoke', pv);
+    const style = { ...plainStyle(), info: { ...plainStyle().info, credits_enabled: true, creator: '原署名',
+      start_ms: 12000, duration_ms: 3000, show_models: false, show_fonts: false } };
+    const api = karaokeServer(style);
+    (URL as any).createObjectURL = vi.fn(() => 'blob:x');
+    (URL as any).revokeObjectURL = vi.fn();
+    const { KaraokePage } = await import('./Karaoke');
+    renderUI(<KaraokePage />);
+    const preview = await screen.findByRole('button', { name: '预览片头署名' });
+    await waitFor(() => expect(preview).toBeEnabled());
+    await userEvent.click(preview);
+    await waitFor(() => expect(api.calls.filter((c) => c.url.endsWith('/karaoke/preview')).at(-1)?.body.t_ms).toBe(13500), { timeout: 2000 });
+    await userEvent.click(screen.getByRole('tab', { name: '歌曲信息' }));
+    const section = document.querySelector('section[data-section=info]') as HTMLElement;
+    fireEvent.change(within(section).getByRole('textbox', { name: '视频制作者' }), { target: { value: '新署名' } });
+    fireEvent.click(within(section).getByRole('button', { name: '预览片头署名' }));
+    await waitFor(() => expect(api.calls.filter((c) => c.url.endsWith('/karaoke/preview')).at(-1)?.body.style.info.creator).toBe('新署名'), { timeout: 2000 });
+    expect(api.calls.filter((c) => c.url.endsWith('/karaoke/preview')).at(-1)?.body.t_ms).toBe(13500);
+  });
+
+  it.each([
+    { credits_enabled: false, message: '请先开启片头署名。' },
+    { credits_enabled: true, message: '请填写制作者，或开启分离模型、字幕字体。' },
+  ])('explains why an empty or disabled credits preview cannot be opened: $credits_enabled', async ({ credits_enabled, message }) => {
+    seedStore('karaoke');
+    karaokeServer({ ...plainStyle(), info: { ...plainStyle().info, credits_enabled, creator: '', show_models: false, show_fonts: false } });
+    const { KaraokePage } = await import('./Karaoke');
+    renderUI(<KaraokePage />);
+    expect(await screen.findByRole('button', { name: '预览片头署名' })).toBeDisabled();
+    expect((await screen.findAllByText(message))[0]).toBeVisible();
   });
 
   it('burn sends the chosen options', async () => {

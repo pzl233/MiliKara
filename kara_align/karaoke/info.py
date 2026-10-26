@@ -21,7 +21,7 @@ from __future__ import annotations
 import re
 from typing import Optional, Sequence
 
-from ..models import KaraokeStyle, Project
+from ..models import AlignmentResult, KaraokeStyle, Project
 from .fonts import BUNDLED_JP, HAN_FAMILIES, Measurer, covering
 
 LABELS = {"title": "歌名", "artist": "歌手", "album": "专辑", "lyricist": "作词", "composer": "作曲", "arranger": "编曲"}
@@ -67,6 +67,44 @@ def info_lines(project: Project, style: KaraokeStyle) -> list[str]:
     if project.song_info_text is not None:
         return [x.strip() for x in project.song_info_text.splitlines() if x.strip()]
     return auto_lines(project, style)
+
+
+def production_lines(project: Project, style: KaraokeStyle, *, result: Optional[AlignmentResult] = None,
+                     font_families: Sequence[str] = ()) -> list[str]:
+    """Opening-only credits. Automatic values describe this render, never the global defaults."""
+    info = style.info
+    if not info.credits_enabled:
+        return []
+
+    def one_line(value: str) -> str:
+        return re.sub(r"\s+", " ", value).strip()
+
+    lines = []
+    creator = one_line(info.creator)
+    if creator:
+        lines.append(f"视频制作者：{creator}")
+    if info.show_models:
+        custom = one_line(info.model_text)
+        if custom:
+            lines.append(f"分离模型：{custom}")
+        else:
+            original = project.asset("original")
+            parent = original.sha256 if original else None
+            models = []
+            for role in ("vocals", "instrumental"):
+                stem = project.asset(role)
+                if stem is None or stem.source.parent_sha256 not in (None, parent):
+                    continue  # a stem from the replaced original is not used in this video
+                name = one_line(stem.source.model or "")
+                if name and name not in models:
+                    models.append(name)
+            lines.extend(f"分离模型：{name}" for name in models)
+    if info.show_fonts:
+        custom = one_line(info.font_text)
+        fonts = list(dict.fromkeys(one_line(f) for f in font_families if one_line(f)))
+        if custom or fonts:
+            lines.append(f"字幕字体：{custom or ' / '.join(fonts)}")
+    return lines
 
 
 # where a card line may wrap: after a space / "・" / "/", or before a bracket, a tilde or " - " —
@@ -122,24 +160,94 @@ def wrap_text(text: str, width, max_w: float) -> list[str]:
 def info_events(project: Project, style: KaraokeStyle, W: int, H: int, k: float, family: str,
                 time_offset_ms: float, *,
                 boxes: Sequence[tuple[float, float, float, float, float, float]] = (),
-                warnings: Optional[list[str]] = None, end_ms: Optional[float] = None) -> list[str]:
+                warnings: Optional[list[str]] = None, end_ms: Optional[float] = None,
+                result: Optional[AlignmentResult] = None, font_families: Sequence[str] = ()) -> list[str]:
     """Dialogue lines of the card (style ``KInfo``) in its corner at the top, for its whole
     duration: when a translation or lyric (``boxes``: (from, to, x0, y0, x1, y1) of what else is
     drawn) would be where the card is, the card gets narrower (its lines wrap) so it ends before it.
     ``end_ms`` (the end of the song on the subtitles' timeline): the ending card too."""
     info = style.info
-    lines = info_lines(project, style)
-    if not info.enabled or not lines:
+    song_lines = info_lines(project, style) if info.enabled else []
+    credits = production_lines(project, style, result=result, font_families=font_families or (family,))
+    lines = song_lines + credits if song_lines else (["视频制作", *credits] if credits else [])
+    if not lines:
         return []
     # a title / album with characters the lyric font lacks: a font with all of them (Windows: libass would
     # fill them in from a font of its own, at another size)
     family = covering(family, style.text.bold, "".join(lines), [BUNDLED_JP, *HAN_FAMILIES])
     t0 = max(0.0, info.start_ms + time_offset_ms)
     t1 = t0 + info.duration_ms
-    events = _card(lines, style, W, H, k, family, t0, t1, boxes, warnings, at_end=False)
-    if info.outro and end_ms is not None and end_ms - info.outro_duration_ms > t1:
-        events += _card(lines, style, W, H, k, family, end_ms - info.outro_duration_ms, end_ms, boxes, warnings,
+    if credits and info.credits_layout == "single-line":
+        events = _single_line(song_lines + credits, style, W, H, k, family, t0, t1, boxes, warnings)
+    else:
+        events = _card(lines, style, W, H, k, family, t0, t1, boxes, warnings, at_end=False)
+    if info.enabled and song_lines and info.outro and end_ms is not None and end_ms - info.outro_duration_ms > t1:
+        events += _card(song_lines, style, W, H, k, family, end_ms - info.outro_duration_ms, end_ms, boxes, warnings,
                         at_end=True)
+    return events
+
+
+def _single_line(lines: list[str], style: KaraokeStyle, W: int, H: int, k: float, family: str,
+                 t0: float, t1: float,
+                 boxes: Sequence[tuple[float, float, float, float, float, float]],
+                 warnings: Optional[list[str]]) -> list[str]:
+    """A single full-width opening line, fitted to the frame and kept clear of subtitles."""
+    info, txt, glow = style.info, style.text, style.glow
+    text = "   |   ".join(lines)
+    margin = info.margin * k
+    max_w = max(1.0, W - 2 * margin)
+    requested_size = max(1.0, info.size * k)
+    size = requested_size
+    # Measurement uses a sub-pixel font size grid; remeasure after fitting rather than
+    # assuming that glyph advances scale exactly linearly at every rounded size.
+    for _ in range(8):
+        size = round(size, 2)
+        width = Measurer(family, txt.bold, size).width(text)
+        if width <= max_w:
+            break
+        size = max(0.01, size * min(0.995, max_w / max(width, 1.0)))
+    fit = min(1.0, size / requested_size)
+    scale_x = f"\\fscx{min(100.0, max_w / max(width, 1.0) * 100):.2f}" if width > max_w else ""
+    if size < 12 * k and warnings is not None:
+        warnings.append("片头单行文字较多，字号已缩小；可精简模型或字体说明，让文字更清楚")
+    pad = (txt.outline + (glow.size + glow.blur if glow.enabled else 0)) * k * fit + 4 * k
+
+    def hits(top):
+        return [box for box in boxes if box[2] < W - margin + pad and margin - pad < box[4]
+                and box[3] < top + size + pad and top - pad < box[5]
+                and box[0] - 200 < t1 and t0 < box[1] + 200]
+
+    tops = [margin] + sorted({box[5] + pad + 6 * k for box in boxes if box[5] + pad + 6 * k > margin
+                             and box[0] - 200 < t1 and t0 < box[1] + 200})
+    top = next((y for y in tops if y + size + pad <= H * 0.45 and not hits(y)), None)
+    if top is None:
+        for y in tops:
+            if y + size + pad > H * 0.45:
+                continue
+            end = min([t1, *[box[0] - 200 for box in hits(y)]])
+            if end - t0 >= 1000:
+                top, t1 = y, end
+                break
+    if top is None or t1 <= t0:
+        if warnings is not None:
+            warnings.append("顶部歌词或翻译占满了空间，片头单行署名没有显示；可调整出现时间或字号")
+        return []
+
+    anchor, x = {"top-left": (7, margin), "top-center": (8, W / 2),
+                 "top-right": (9, W - margin)}[info.position]
+    fade_in, fade_out = min(350, (t1 - t0) / 4), min(400, (t1 - t0) / 4)
+    tags = (f"\\an{anchor}\\pos({x:.1f},{top:.1f})\\fn{family}\\fs{size:.2f}\\b{int(txt.bold)}{scale_x}\\q2"
+            f"\\fad({fade_in:.0f},{fade_out:.0f})")
+    body = _escape(text)
+    events = []
+    if glow.enabled:
+        look = (f"\\1a&HFF&\\3c{_bgr(glow.color_unsung)}"
+                f"\\3a&H{int(round(255 * (1 - glow.strength / 100))):02X}&"
+                f"\\bord{glow.size * k * fit * 0.5:.2f}\\blur{glow.blur * k * fit:.2f}\\shad0")
+        events.append(_dialogue(L_INFO_GLOW, t0, t1, tags + look, body))
+    look = (f"\\1c{_bgr(info.color or txt.color_unsung)}\\3c{_bgr(txt.outline_color)}"
+            f"\\bord{txt.outline * k * fit * 0.55:.2f}\\shad{txt.shadow * k * fit * 0.6:.2f}")
+    events.append(_dialogue(L_INFO, t0, t1, tags + look, body))
     return events
 
 
@@ -151,6 +259,7 @@ def _card(lines: list[str], style: KaraokeStyle, W: int, H: int, k: float, famil
     fits beside it: shorter (gone before that shows / in after it has gone), else moved down below
     it, else in the other corner."""
     info, txt, glow = style.info, style.text, style.glow
+    centered = info.position == "top-center"
 
     title_size = info.size * k
     sub_size = max(18 * k, title_size * 0.56)
@@ -187,6 +296,10 @@ def _card(lines: list[str], style: KaraokeStyle, W: int, H: int, k: float, famil
 
     def region(right: bool, top: float, block_h: float, reach: float) -> tuple[float, float, float, float]:
         """Where the card is drawn (sliding in, outline and glow included)."""
+        if centered:
+            text_w = max(0.0, reach - bar_w - gap - slide_room)
+            extent = text_w / 2 + bar_w + gap + slide_room + pad
+            return W / 2 - extent, top - pad, W / 2 + extent, top + block_h + pad
         x0, x1 = (W - margin - reach - pad, W - margin + pad) if right else (margin - pad, margin + reach + pad)
         return x0, top - pad, x1, top + block_h + pad
 
@@ -207,6 +320,9 @@ def _card(lines: list[str], style: KaraokeStyle, W: int, H: int, k: float, famil
         hits = in_the_way(region(right, margin, block_h, reach), t0, t1)
         if not hits:
             top, n0, n1 = margin, t0, t1
+            break
+        if centered:
+            placed = None
             break
         # the room between the corner and the nearest thing in the way
         room = (W - margin - max(bx[4] for bx in hits) if right else min(bx[2] for bx in hits) - margin) \
@@ -254,7 +370,9 @@ def _card(lines: list[str], style: KaraokeStyle, W: int, H: int, k: float, famil
             return None
 
         got = None
-        for side, move in ((right, False), (right, True), (not right, False), (not right, True)):
+        candidates = ((right, False), (right, True)) if centered else (
+            (right, False), (right, True), (not right, False), (not right, True))
+        for side, move in candidates:
             got = place(side, move)
             if got is not None:
                 break
@@ -269,8 +387,8 @@ def _card(lines: list[str], style: KaraokeStyle, W: int, H: int, k: float, famil
         top, n0, n1 = got
     t0, t1 = n0, n1
     slide = 28 * k * (1 if right else -1)
-    x_text = (W - margin - bar_w - gap) if right else (margin + bar_w + gap)
-    an = 9 if right else 7
+    x_text = W / 2 if centered else ((W - margin - bar_w - gap) if right else (margin + bar_w + gap))
+    an = 8 if centered else (9 if right else 7)
 
     # coming in: the bar grows down, then the lines slide in from the edge one after another;
     # leaving is the same played backwards: the lines slide back out (the last one first), then the
@@ -303,7 +421,8 @@ def _card(lines: list[str], style: KaraokeStyle, W: int, H: int, k: float, famil
                                         f"{font}{move_out}\\fad(0,{out_end - out_start:.0f}){look}", body))
             else:  # too short a card for both: in, then a plain fade
                 events.append(_dialogue(layer, a, t1, f"{font}{move_in}\\fad(350,300){look}", body))
-    bar_x = (W - margin - bar_w) if right else margin
+    bar_x = W / 2 - max(r[3] for r in placed) / 2 - gap - bar_w if centered else (
+        (W - margin - bar_w) if right else margin)
     rect = f"m 0 0 l {bar_w:.1f} 0 l {bar_w:.1f} {block_h:.1f} l 0 {block_h:.1f}"
     bar = f"\\an7\\pos({bar_x:.1f},{top:.1f})\\bord0\\shad{txt.shadow * k * 0.4:.2f}\\1c{accent}"
     shape = f"{{\\p1}}{rect}{{\\p0}}"

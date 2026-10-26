@@ -54,6 +54,11 @@ PRESETS: list[SeparationPreset] = [
         "melband-roformer", "model_mel_band_roformer_ep_3005_sdr_11.4360.ckpt", "MelBand RoFormer",
         "推荐：人声分离干净，速度与质量平衡（Apple 芯片 GPU 约 1 分钟处理 1 分钟音频）。"),
     SeparationPreset(
+        "bs-roformer-karaoke-frazer-becruily", "bs_roformer_karaoke_frazer_becruily.ckpt",
+        "BS-RoFormer Karaoke (frazer/becruily)",
+        "frazer / becruily Karaoke 模型：首次使用会从作者仓库下载，之后可离线使用；建议 GPU。",
+        license_note="Author weights: becruily/bs-roformer-karaoke (Hugging Face); no explicit weight licence is declared. Do not redistribute without checking with the authors."),
+    SeparationPreset(
         "bs-roformer", "model_bs_roformer_ep_317_sdr_12.9755.ckpt", "BS-RoFormer",
         "质量最高但最慢（约为 MelBand 的 1.5–2 倍耗时）；建议使用 GPU / MPS。"),
     SeparationPreset(
@@ -199,7 +204,11 @@ else:
 from audio_separator.separator import Separator
 sep = Separator(output_dir=args["out_dir"], output_format="WAV", sample_rate=args["sample_rate"],
                 normalization_threshold=args.get("normalization", 0.9), model_file_dir=args["model_dir"])
-sep.load_model(model_filename=args["model_filename"])
+if args["model_filename"] == "bs_roformer_karaoke_frazer_becruily.ckpt":
+    from kara_align.audio.bs_roformer_karaoke import load_model
+    load_model(sep)
+else:
+    sep.load_model(model_filename=args["model_filename"])
 files = sep.separate(args["input"])
 print("@@RESULT@@" + json.dumps({"files": files}), flush=True)
 """
