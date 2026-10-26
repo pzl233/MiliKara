@@ -159,7 +159,7 @@ def merge_lines(doc: LyricsDoc, ids: list[str]) -> LyricsDoc:
         voice=first.voice,
         source=LineSource(origin=first.source.origin, source_id=first.source.source_id,
                           raw_index=first.source.raw_index, merged_from=list(ids)),
-        singers=singers, singer_spans=singer_spans,
+        singers=singers, singer_spans=singer_spans, karaoke_rows=first.karaoke_rows,
     )
     new.lines[positions[0]: positions[-1] + 1] = [merged]
     return new
@@ -195,7 +195,7 @@ def split_line(doc: LyricsDoc, line_id: str, at_char: int) -> LyricsDoc:
                                        imported_end_ms=None, source=LineSource(**src)))
     right = Line(id=new_id("L"), text=right_text.lstrip(), kind=line.kind, sing=line.sing,
                  segments=right_segs, imported_start_ms=None, imported_end_ms=line.imported_end_ms,
-                 voice=line.voice, source=LineSource(**src))
+                 voice=line.voice, karaoke_rows=line.karaoke_rows, source=LineSource(**src))
     if left.text != left_text or right.text != right_text:
         left.segments, right.segments = [], []
     from .singers import split as split_singers

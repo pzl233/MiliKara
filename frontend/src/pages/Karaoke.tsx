@@ -24,8 +24,10 @@ import { countdownPlan } from '@/lib/countdown';
 import { useFitHeight } from '@/lib/useFitHeight';
 import { singersSettled } from '@/store/singers';
 import { productionCreditsPreview } from '@/lib/productionCredits';
+import { LineLayoutEditor, type LayoutLine } from '@/components/karaoke/LineLayoutEditor';
 
 interface LineSpan { id: string; index: number; text: string; start: number; end: number; countdown: boolean | null }
+interface PreviewRequest { tMs: number; lineId?: string }
 
 export function KaraokePage() {
   const project = useProject()!;
@@ -37,7 +39,7 @@ export function KaraokePage() {
   const [songInfo, setSongInfo] = useState<SongInfo | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
-  const [creditsPreviewRequest, setCreditsPreviewRequest] = useState<{ tMs: number } | null>(null);
+  const [previewRequest, setPreviewRequest] = useState<PreviewRequest | null>(null);
   const dirty = useRef(false);
   const pid = project.id;
   const styleCol = useFitHeight();
@@ -144,6 +146,13 @@ export function KaraokePage() {
         countdown: text.get(l.line_id)?.cd ?? null }))
       .sort((a, b) => a.start - b.start);
   }, [result, project.lyrics.lines]);
+  const layoutLines: LayoutLine[] = useMemo(() => {
+    const times = new Map(lines.map((l) => [l.id, l]));
+    return project.lyrics.lines.flatMap((l, i) => l.sing && l.kind === 'lyric' ? [{
+      id: l.id, index: i + 1, text: l.text, rows: l.karaoke_rows,
+      start: times.get(l.id)?.start ?? null, end: times.get(l.id)?.end ?? null,
+    }] : []);
+  }, [project.lyrics.lines, lines]);
 
   if (!result) {
     return (
@@ -174,10 +183,23 @@ export function KaraokePage() {
     const target = productionCreditsPreview(info, project.audio);
     if (target.reason) { toast('warn', target.reason); return; }
     if (JSON.stringify(info) !== JSON.stringify(style.info)) change({ ...style, info: { ...info } });
-    setCreditsPreviewRequest({ tMs: target.tMs });
+    setPreviewRequest({ tMs: target.tMs });
     previewArea.current?.scrollIntoView?.({ block: 'nearest', behavior: 'smooth' });
   };
   const creditsPreviewReason = (info: KaraokeStyle['info']) => productionCreditsPreview(info, project.audio).reason;
+  const saveLineLayout = async (lineIds: string[], rows: 1 | 2 | null) => {
+    await run(async () => {
+      await flush();
+      const pv = await api.put<ProjectView>(`/api/projects/${pid}/karaoke/line-layout`, { line_ids: lineIds, rows });
+      setPV(pv);
+      if (useApp.getState().pid === pid) toast('ok', `已设置 ${lineIds.length} 句：${rows === null ? '跟随默认' : `${rows}行`}`);
+    }, '保存分段行数失败');
+  };
+  const previewLayoutLine = (line: LayoutLine) => {
+    if (line.start === null || line.end === null) return;
+    setPreviewRequest({ tMs: Math.round(line.start + (line.end - line.start) * 0.4), lineId: line.id });
+    previewArea.current?.scrollIntoView?.({ block: 'nearest', behavior: 'smooth' });
+  };
 
   return (
     <>
@@ -193,10 +215,11 @@ export function KaraokePage() {
       <div className="grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(300px,340px)] xl:grid-cols-[minmax(0,1fr)_380px]">
         <div className="min-w-0 space-y-6">
           <div ref={previewArea}>
-            <PreviewCard style={style} lines={lines} refreshKey={`${songInfo?.text ?? ''}|${lines.map((l) => l.countdown ?? '').join()}`}
-              creditsPreviewRequest={creditsPreviewRequest} onPreviewCredits={() => showCreditsPreview(style.info)}
+            <PreviewCard style={style} lines={lines} refreshKey={JSON.stringify([songInfo?.text, project.lyrics.lines.map((l) => [l.id, l.countdown, l.karaoke_rows])])}
+              previewRequest={previewRequest} onPreviewCredits={() => showCreditsPreview(style.info)}
               creditsPreviewReason={creditsPreviewReason(style.info)} />
           </div>
+          <LineLayoutEditor lines={layoutLines} defaultRows={style.layout.lines} onSave={saveLineLayout} onPreview={previewLayoutLine} />
           <BurnCard style={style} patch={patch} beforeBurn={flush} />
           <RecentExports jobKinds={['burn']} match={(n) => /-karaoke.*\.(mp4|mkv|mov)$/i.test(n)} first={3}
             title="导出过的视频" description="这个项目生成过的带字幕视频，最新的在前。" />
@@ -257,9 +280,9 @@ function Header() {
 
 // ------------------------------------------------------------------ preview
 
-function PreviewCard({ style, lines, refreshKey, creditsPreviewRequest, onPreviewCredits, creditsPreviewReason }: {
+function PreviewCard({ style, lines, refreshKey, previewRequest, onPreviewCredits, creditsPreviewReason }: {
   style: KaraokeStyle; lines: LineSpan[]; refreshKey: string;
-  creditsPreviewRequest: { tMs: number } | null; onPreviewCredits: () => void; creditsPreviewReason: string | null;
+  previewRequest: PreviewRequest | null; onPreviewCredits: () => void; creditsPreviewReason: string | null;
 }) {
   const [lineIdx, setLineIdx] = useState(0);
   const [pct, setPct] = useState(40);
@@ -270,8 +293,12 @@ function PreviewCard({ style, lines, refreshKey, creditsPreviewRequest, onPrevie
   const [error, setError] = useState<string | null>(null);
   const [timeDraft, setTimeDraft] = useState<string | null>(null);
   useEffect(() => {
-    if (creditsPreviewRequest) { setCustom(creditsPreviewRequest.tMs); setTimeDraft(null); }
-  }, [creditsPreviewRequest]);
+    if (previewRequest) {
+      setCustom(previewRequest.tMs); setTimeDraft(null);
+      const i = previewRequest.lineId ? lines.findIndex((l) => l.id === previewRequest.lineId) : -1;
+      if (i >= 0) setLineIdx(i);
+    }
+  }, [previewRequest]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const line = lines[Math.min(lineIdx, Math.max(0, lines.length - 1))];
   const plan = useMemo(() => countdownPlan(lines, style.countdown), [lines, style.countdown]);

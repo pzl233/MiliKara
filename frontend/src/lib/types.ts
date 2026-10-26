@@ -46,6 +46,8 @@ export interface Line {
   singer_spans?: SingerSpan[];
   /** countdown dots before this line: null = as the style's rules say, true / false = always / never */
   countdown?: boolean | null;
+  /** simultaneous karaoke rows for this line; null / absent follows the style's layout */
+  karaoke_rows?: 1 | 2 | null;
 }
 
 export interface SingerSpan { start: number; end: number; singers: number[] }

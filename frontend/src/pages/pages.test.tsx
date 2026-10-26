@@ -450,6 +450,20 @@ describe('karaoke subtitles page', () => {
         }
         return json(info);
       }
+      if (u.endsWith('/karaoke/line-layout')) {
+        const body = JSON.parse(String(init!.body));
+        api.calls.push({ method: 'PUT', url: u, body });
+        const pv = structuredClone(useApp.getState().pv!);
+        for (const line of pv.project.lyrics.lines) {
+          if (body.line_ids.includes(line.id)) line.karaoke_rows = body.rows;
+        }
+        return json(pv);
+      }
+      if (u.endsWith('/karaoke') && init?.method === 'PUT') {
+        const body = JSON.parse(String(init.body));
+        api.calls.push({ method: 'PUT', url: u, body });
+        return json(body);
+      }
       if (u.endsWith('/karaoke') && (!init || init.method === 'GET' || !init.method)) return json(style);
       if (u.endsWith('/karaoke/preview')) {
         api.calls.push({ method: 'POST', url: u, body: JSON.parse(String(init!.body)) });
@@ -574,6 +588,90 @@ describe('karaoke subtitles page', () => {
     fireEvent.click(within(section).getByRole('button', { name: '预览片头署名' }));
     await waitFor(() => expect(api.calls.filter((c) => c.url.endsWith('/karaoke/preview')).at(-1)?.body.style.info.creator).toBe('新署名'), { timeout: 2000 });
     expect(api.calls.filter((c) => c.url.endsWith('/karaoke/preview')).at(-1)?.body.t_ms).toBe(13500);
+  });
+
+  it('saves selected line layouts atomically, refreshes the preview, and keeps current style edits', async () => {
+    const pv = fixturePV();
+    const style = plainStyle();
+    style.layout.lines = 1;
+    seedStore('karaoke', pv);
+    const api = karaokeServer(style);
+    (URL as any).createObjectURL = vi.fn(() => 'blob:x');
+    (URL as any).revokeObjectURL = vi.fn();
+    const { KaraokePage } = await import('./Karaoke');
+    renderUI(<KaraokePage />);
+    const card = await screen.findByRole('region', { name: '分段行数' });
+    expect(within(card).getAllByText('默认（1行）')).toHaveLength(4);
+    expect(within(card).getByRole('button', { name: '两行（上左下右）' })).toBeDisabled();
+    await waitFor(() => expect(api.find('POST', '/karaoke/preview').length).toBeGreaterThan(0), { timeout: 2000 });
+    const previews = api.find('POST', '/karaoke/preview').length;
+    await userEvent.click(screen.getByRole('tab', { name: '歌词' }));
+    // Apply immediately, while the subtitle edit is still waiting for its debounce.
+    const opacity = screen.getByRole('textbox', { name: '字幕透明度（输入数值）' });
+    fireEvent.focus(opacity);
+    fireEvent.change(opacity, { target: { value: '25' } });
+    fireEvent.blur(opacity);
+    const choices = within(card).getAllByRole('checkbox');
+    fireEvent.click(choices[0]);
+    fireEvent.click(choices[2], { shiftKey: true });
+    await userEvent.click(within(card).getByRole('button', { name: '两行（上左下右）' }));
+    await waitFor(() => expect(api.find('PUT', '/karaoke/line-layout')).toHaveLength(1));
+    expect(api.find('PUT', '/karaoke/line-layout')[0].body).toEqual({ line_ids: ['L0001', 'L0002', 'L0003'], rows: 2 });
+    expect(api.calls.findIndex((c) => c.method === 'PUT' && c.url.endsWith('/karaoke'))).toBeLessThan(api.calls.findIndex((c) => c.url.endsWith('/karaoke/line-layout')));
+    expect(api.calls.filter((c) => c.method === 'PUT' && c.url.endsWith('/karaoke')).at(-1)?.body.text.opacity).toBe(75);
+    expect(await within(card).findAllByText('2行')).toHaveLength(3);
+    expect(within(card).getByText('默认（1行）')).toBeInTheDocument();
+    expect(useApp.getState().pv!.project.lyrics.lines.map((l) => [l.id, l.text, l.segments])).toEqual(pv.project.lyrics.lines.map((l) => [l.id, l.text, l.segments]));
+    await waitFor(() => expect(api.find('POST', '/karaoke/preview').length).toBeGreaterThan(previews), { timeout: 2000 });
+    expect(api.find('POST', '/karaoke/preview').at(-1)?.body.style.text.opacity).toBe(75);
+
+    // Restore the selection in one call; unselected lyrics stay at their existing value.
+    await userEvent.click(within(card).getByRole('button', { name: '跟随默认' }));
+    await waitFor(() => expect(api.find('PUT', '/karaoke/line-layout')).toHaveLength(2));
+    expect(api.find('PUT', '/karaoke/line-layout')[1].body).toEqual({ line_ids: ['L0001', 'L0002', 'L0003'], rows: null });
+    expect(await within(card).findAllByText('默认（1行）')).toHaveLength(4);
+  });
+
+  it('refreshes the same preview moment after only a line layout changes, and jumps to the first selected lyric', async () => {
+    const pv = fixturePV();
+    seedStore('karaoke', pv);
+    const api = karaokeServer();
+    (URL as any).createObjectURL = vi.fn(() => 'blob:x');
+    (URL as any).revokeObjectURL = vi.fn();
+    const { KaraokePage } = await import('./Karaoke');
+    renderUI(<KaraokePage />);
+    const card = await screen.findByRole('region', { name: '分段行数' });
+    await waitFor(() => expect(api.find('POST', '/karaoke/preview').length).toBeGreaterThan(0), { timeout: 2000 });
+    const oldPreview = api.find('POST', '/karaoke/preview').at(-1)!;
+    const count = api.find('POST', '/karaoke/preview').length;
+    const choices = within(card).getAllByRole('checkbox');
+    fireEvent.click(choices[2]);
+    fireEvent.click(choices[1]);
+    await userEvent.click(within(card).getByRole('button', { name: '一行' }));
+    await waitFor(() => expect(api.find('POST', '/karaoke/preview').length).toBeGreaterThan(count), { timeout: 2000 });
+    expect(api.find('POST', '/karaoke/preview').at(-1)?.body).toEqual(oldPreview.body);
+    await userEvent.click(within(card).getByRole('button', { name: '预览所选第一句' }));
+    const line = pv.project.results.find((r) => r.id === pv.project.active_result_id)!.lines.find((l) => l.line_id === 'L0002')!;
+    await waitFor(() => expect(api.find('POST', '/karaoke/preview').at(-1)?.body.t_ms).toBe(Math.round(line.start_ms! + (line.end_ms! - line.start_ms!) * 0.4)), { timeout: 2000 });
+    expect(screen.getByRole('combobox', { name: '预览歌词行' })).toHaveValue('1');
+  });
+
+  it('keeps line choices and displayed layouts when a save fails, allowing retry', async () => {
+    seedStore('karaoke');
+    const api = karaokeServer();
+    const base = api.fn.getMockImplementation()!;
+    api.fn.mockImplementation(async (url: string, init?: RequestInit) => String(url).endsWith('/karaoke/line-layout')
+      ? new Response(JSON.stringify({ detail: '保存失败，请重试' }), { status: 500 }) : base(url, init));
+    const { KaraokePage } = await import('./Karaoke');
+    renderUI(<KaraokePage />);
+    const card = await screen.findByRole('region', { name: '分段行数' });
+    const first = within(card).getAllByRole('checkbox')[0];
+    fireEvent.click(first);
+    await userEvent.click(within(card).getByRole('button', { name: '两行（上左下右）' }));
+    await waitFor(() => expect(useApp.getState().toasts.at(-1)?.title).toBe('保存分段行数失败'));
+    expect(first).toBeChecked();
+    expect(within(card).getAllByText(`默认（${DEFAULT_STYLE.layout.lines}行）`)).toHaveLength(4);
+    expect(within(card).getByRole('button', { name: '两行（上左下右）' })).toBeEnabled();
   });
 
   it.each([

@@ -1066,6 +1066,32 @@ def set_karaoke_style(h: ProjectHandle, style: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
+# per-passage karaoke row count (display only)
+# ---------------------------------------------------------------------------
+
+
+def set_karaoke_line_layout(h: ProjectHandle, line_ids: list[str], rows: Optional[int]) -> None:
+    """Set selected sung lines to one / two display rows, or back to the global style.
+
+    Validate the complete selection before changing anything. This is a display
+    preference: no text preparation, alignment input or timing is changed.
+    """
+    if rows is not None and (type(rows) is not int or rows not in (1, 2)):
+        raise ServiceError("rows 只能是 null、1 或 2")
+    if not isinstance(line_ids, list) or not line_ids:
+        raise ServiceError("请至少选择一行歌词")
+    if any(not isinstance(line_id, str) or not line_id for line_id in line_ids):
+        raise ServiceError("每一项必须是有效的歌词行 ID")
+    with h.lock:
+        selected = [_line(h, line_id) for line_id in dict.fromkeys(line_ids)]
+        if any(ln.kind != "lyric" or not ln.sing for ln in selected):
+            raise ServiceError("只能为参与演唱的歌词行设置显示行数")
+        for ln in selected:
+            ln.karaoke_rows = rows
+        h.save()
+
+
+# ---------------------------------------------------------------------------
 # singers (多人演唱分色)
 # ---------------------------------------------------------------------------
 

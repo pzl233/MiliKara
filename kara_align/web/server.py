@@ -13,7 +13,7 @@ from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, StrictInt
 from starlette.background import BackgroundTask
 
 from .. import __version__
@@ -106,6 +106,11 @@ class MarkersBody(BaseModel):
 
 class LineIdsBody(BaseModel):
     line_ids: Optional[list[str]] = None
+
+
+class KaraokeLineLayoutBody(BaseModel):
+    line_ids: list[str] = Field(min_length=1)
+    rows: Optional[StrictInt] = Field(..., ge=1, le=2)
 
 
 class SplitBody(BaseModel):
@@ -1107,6 +1112,12 @@ def create_app(root: Optional[Path] = None, jobs: Optional[JobManager] = None,
         except RenderError as e:
             raise HTTPException(400, str(e)) from e
         return Response(png, media_type="image/png", headers={"Cache-Control": "no-store"})
+
+    @app.put("/api/projects/{pid}/karaoke/line-layout")
+    def karaoke_line_layout(pid: str, body: KaraokeLineLayoutBody):
+        h = handle(pid)
+        guard(S.set_karaoke_line_layout, h, body.line_ids, body.rows)
+        return view(h)
 
     @app.post("/api/projects/{pid}/karaoke/burn")
     def karaoke_burn(pid: str, body: dict):

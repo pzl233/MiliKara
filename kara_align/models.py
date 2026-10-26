@@ -24,7 +24,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Annotated, Any, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, StringConstraints, model_validator
 
 SCHEMA_VERSION = 1
 
@@ -199,6 +199,8 @@ class Line(_Base):
     # countdown dots before this line in the karaoke subtitles: None = as the style's rules say
     # (KaraokeCountdown), True / False = always / never for this line
     countdown: Optional[bool] = None
+    # karaoke display only: None follows the style's global row count; 1 / 2 override this passage
+    karaoke_rows: Optional[StrictInt] = Field(default=None, ge=1, le=2)
 
     @model_validator(mode="before")
     @classmethod

@@ -36,7 +36,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Callable, Optional
 
 from ..models import AlignmentResult, KaraokeStyle, Line, Project, Segment
 from ..reading.japanese import is_kanji, to_hiragana, to_katakana
@@ -186,6 +186,8 @@ class LaidLine:
     # shown until the last one is sung
     trans_until: Optional[int] = None
     countdown_ms: int = 0  # countdown dots before it (plan_countdowns): the time they need; 0 = none
+    layout_from: Optional[int] = None  # display-only boundaries between one-/two-row passages
+    layout_until: Optional[int] = None
 
     @property
     def text(self) -> str:
@@ -498,6 +500,37 @@ def countdown_dots(appear: float, t0: float, n: int) -> list[float]:
     return [t0 - i * step for i in range(n)]
 
 
+def lyric_rows(line: LaidLine, style: KaraokeStyle) -> int:
+    return line.line.karaoke_rows or max(1, style.layout.lines)
+
+
+def lyric_arrangement(line: LaidLine, style: KaraokeStyle) -> str:
+    # An explicitly selected two-row passage is always upper-left / lower-right.
+    return "alternate" if line.line.karaoke_rows == 2 else style.layout.arrangement
+
+
+def _layout_boundaries(lines: list[LaidLine], style: KaraokeStyle) -> None:
+    """Keep early-show / hold windows inside a passage; never clip actual singing."""
+    groups: list[list[LaidLine]] = []
+    previous = None
+    for ll in lines:
+        ll.layout_from, ll.layout_until = None, None
+        key = (lyric_rows(ll, style), lyric_arrangement(ll, style))
+        if key != previous:
+            groups.append([])
+            previous = key
+        groups[-1].append(ll)
+    for before, after in zip(groups, groups[1:]):
+        sung_end, next_start = max(ll.end for ll in before), after[0].start
+        # In an ordinary gap, share the gap between the two passages. A real duet
+        # stays visible until it finishes; its next passage begins at its singing.
+        boundary = (sung_end + next_start) // 2 if sung_end <= next_start else next_start
+        for ll in before:
+            ll.layout_until = max(boundary, sung_end)
+        for ll in after:
+            ll.layout_from = boundary
+
+
 def schedule(lines: list[LaidLine], style: KaraokeStyle) -> int:
     """Give each line a display window and a slot (rows stacked on screen); return how many
     lines had to go to an extra row.
@@ -513,15 +546,25 @@ def schedule(lines: list[LaidLine], style: KaraokeStyle) -> int:
     No line is ever dropped.
     """
     tm = style.timing
-    n = max(1, style.layout.lines)
     lead, hold = max(0, tm.lead_in_ms), max(0, tm.hold_ms)
     early = max(lead, tm.early_max_ms) if tm.early_show else lead
-    step = -1 if style.layout.position == "bottom" else 1  # extra rows go away from the frame edge
+    bottom = style.layout.position == "bottom"
+    # Keys are physical rows counted inward from the edge, so a single row and
+    # the lower row of a two-row passage share a stable baseline and occupancy.
     last: dict[int, LaidLine] = {}
     turn = 0
     extra = 0
+    previous = None
+    _layout_boundaries(lines, style)
     for ll in lines:
+        n = lyric_rows(ll, style)
+        key = (n, lyric_arrangement(ll, style))
+        if key != previous:
+            turn, previous = 0, key
+        physical = lambda slot: n - 1 - slot if bottom else slot
         ll.show_to = ll.end + hold
+        if ll.layout_until is not None:
+            ll.show_to = min(ll.show_to, ll.layout_until)
 
         # a line with countdown dots appears as its countdown begins (the first dot goes a second later),
         # not earlier with the early show: the dots never sit still waiting
@@ -529,14 +572,14 @@ def schedule(lines: list[LaidLine], style: KaraokeStyle) -> int:
         early_ll = ll.countdown_ms or early
 
         def appear(slot: int) -> int:
-            prev = last.get(slot)
+            prev = last.get(physical(slot))
             free_at = prev.show_to if prev is not None else 0
             t = max(0, ll.start - early_ll, min(free_at, ll.start - lead_ll))
             if prev is not None and prev.show_to > t:
                 t = max(t, min(prev.show_to, max(prev.end, ll.start - 200)))
-            return t
+            return max(t, ll.layout_from or 0)
 
-        free = [s for s in range(n) if s not in last or last[s].end <= ll.start]
+        free = [s for s in range(n) if physical(s) not in last or last[physical(s)].end <= ll.start]
         natural = turn % n
         if free:
             if ll.countdown_ms and 0 in free:
@@ -549,16 +592,17 @@ def schedule(lines: list[LaidLine], style: KaraokeStyle) -> int:
                 slot = min(free, key=lambda s: (appear(s), s != natural, s))
         else:
             extra += 1
-            rows = sorted((s for s in last if not 0 <= s < n), key=abs)  # nearest the block first
-            slot = next((s for s in rows if last[s].end <= ll.start), None)
-            if slot is None:
-                slot = (-1 if step < 0 else n) + step * len(rows)
+            rows = sorted(s for s in last if s >= n)  # nearest the block first
+            row = next((s for s in rows if last[s].end <= ll.start), None)
+            if row is None:
+                row = next(s for s in range(n, n + len(last) + 1) if s not in last)
+            slot = n - 1 - row if bottom else row
         ll.slot = slot
         ll.show_from = appear(slot)
-        prev = last.get(slot)
+        prev = last.get(physical(slot))
         if prev is not None:
             prev.show_to = min(prev.show_to, ll.show_from)
-        last[slot] = ll
+        last[physical(slot)] = ll
         if 0 <= slot < n:
             turn = slot + 1
     return extra
@@ -644,6 +688,10 @@ def translation_windows(laid: list[LaidLine], style: KaraokeStyle) -> list[tuple
         if i + 1 < len(lines):
             t_to = min(t_to, max(lines[i + 1].start - lead, end))
         t_from = max(ll.start - lead, prev_to, 0)
+        if ll.layout_from is not None:
+            t_from = max(t_from, ll.layout_from)
+        if ll.layout_until is not None:
+            t_to = min(t_to, max(ll.layout_until, end))
         if t_to > t_from:
             out.append((ll, t_from, t_to))
             prev_to = t_to
@@ -655,7 +703,9 @@ Box = tuple[float, float, float, float, float, float]  # shown from, to (ASS tim
 
 def translation_placements(laid: list[LaidLine], style: KaraokeStyle, W: int, H: int, block_top: float,
                            block_h: float, size: float, measurer, margin_h: float,
-                           margin_v: float) -> list[tuple[int, int, str, str, tuple[float, float, float, float], LaidLine]]:
+                           margin_v: float, *,
+                           block_for: Optional[Callable[[LaidLine], tuple[float, float]]] = None
+                           ) -> list[tuple[int, int, str, str, tuple[float, float, float, float], LaidLine]]:
     """(from, to, position tags, text, (x0, y0, x1, y1), line): the translation as one line at the
     other edge of the frame or just outside the lyric block."""
     lay = style.layout
@@ -668,6 +718,9 @@ def translation_placements(laid: list[LaidLine], style: KaraokeStyle, W: int, H:
     avail = max(1.0, W - 2 * margin_h)
     out = []
     for ll, t0, t1 in translation_windows(laid, style):
+        if style.translation.position == "block" and block_for is not None:
+            top, height = block_for(ll)
+            an, y = (2, top - gap) if bottom else (8, top + height + gap)
         text = ll.translation or ""
         w = measurer.width(text) or 1.0
         fs = f"\\fscx{avail / w * 100:.1f}\\fscy{avail / w * 100:.1f}" if w > avail else ""
@@ -1079,6 +1132,17 @@ def build_ass(project: Project, result: AlignmentResult, style: Optional[Karaoke
     block_top = max(0.0, H - margin_v - block_h) if lay.position == "bottom" else margin_v
     top_row = min((ll.slot for ll in laid), default=0)
 
+    def block_for(ll: LaidLine) -> tuple[float, float]:
+        rows = lyric_rows(ll, style)
+        height = rows * slot_h + (rows - 1) * spacing
+        top = max(0.0, H - margin_v - height) if lay.position == "bottom" else margin_v
+        return top, height
+
+    def slot_top_for(ll: LaidLine) -> float:
+        return block_for(ll)[0] + ll.slot * (slot_h + spacing)
+
+    mixed_rows = any(ll.line.karaoke_rows is not None for ll in laid)
+
     fade_in, fade_out = max(0, tm.fade_in_ms), max(0, tm.fade_out_ms)
     g_alpha = f"&H{int(round(255 * (1 - glow.strength / 100))):02X}&"
 
@@ -1302,8 +1366,9 @@ def build_ass(project: Project, result: AlignmentResult, style: Optional[Karaoke
         if scale < 1.0:
             warnings.append(f"「{ll.text}」过长，已缩小到 {scale:.0%}")
         align = "center"
-        if lay.arrangement == "alternate" and n > 1 and 0 <= ll.slot < n:
-            align = "left" if ll.slot == 0 else ("right" if ll.slot == n - 1 else "center")
+        rows = lyric_rows(ll, style)
+        if lyric_arrangement(ll, style) == "alternate" and rows > 1 and 0 <= ll.slot < rows:
+            align = "left" if ll.slot == 0 else ("right" if ll.slot == rows - 1 else "center")
         wide = extent * scale > avail + 0.5
         geom.append((widths, line_w * scale, over_l * scale, over_r * scale, scale, align, wide))
     insets = alternate_insets(laid, geom, lay.alternate_indent * k, avail)
@@ -1320,12 +1385,17 @@ def build_ass(project: Project, result: AlignmentResult, style: Optional[Karaoke
             side = edge_x if wide else margin_h
             lo, hi = side + over_l, W - side - over_r - line_w
             x0 = min(max((W - line_w) / 2, lo), hi) if lo <= hi else (lo + hi) / 2
-        slot_top = block_top + ll.slot * (slot_h + spacing)
+        slot_top = slot_top_for(ll)
         main_y = slot_top + ruby_h + main_size
         # shrunk lines keep their bottom edge where it was
         ruby_y = main_y - main_size * scale - gap * scale
         line_top = (ruby_y - ruby_size * scale) if has_ruby else (main_y - main_size * scale)
-        room_above = spacing if ll.slot > top_row else line_top  # free room above the line (the ball)
+        if mixed_rows:
+            above = ll.slot > 0 or any(slot_top_for(other) < slot_top - 1 and other.show_from < ll.show_to
+                                      and ll.show_from < other.show_to for other in laid)
+            room_above = spacing if above else line_top
+        else:
+            room_above = spacing if ll.slot > top_row else line_top
         fs = "" if scale >= 1.0 else f"\\fscx{scale * 100:.1f}\\fscy{scale * 100:.1f}"
         spans = visible_spans(ll, style)
         if len(spans) > 1:
@@ -1404,7 +1474,8 @@ def build_ass(project: Project, result: AlignmentResult, style: Optional[Karaoke
     if tr.enabled and not per_line_trans:
         fad = f"\\fad({fade_in},{fade_out})" if (fade_in or fade_out) else ""
         for t0, t1, pos, text, (bx0, by0, bx1, by1), ll in translation_placements(
-                laid, style, W, H, block_top, block_h, trans_size, m_trans, margin_h, margin_v):
+                laid, style, W, H, block_top, block_h, trans_size, m_trans, margin_h, margin_v,
+                block_for=block_for if mixed_rows else None):
             emit_trans(t0, t1, pos, text, fad, line_singers(ll), (bx0, bx1))
             boxes.append((t0 + time_offset_ms, t1 + time_offset_ms, bx0, by0, bx1, by1))
 
